@@ -1,6 +1,6 @@
 [package]
 name = "doh"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 description = "Multi-platform social media posting applet for COSMIC desktop"
@@ -29,6 +29,7 @@ zbus = "4"
 # Security & Storage
 keyring = "3"
 rfd = "0.14"
+emojis = "0.6"
 
 # Platform SDKs (will be added as we implement)
 # tweety-rs = "0.1"  # X/Twitter

@@ -3,9 +3,9 @@
 use crate::config::Config;
 use crate::credentials::Credentials;
 use crate::post_manager::PostManager;
-use crate::fl;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::{window::Id, Limits, Subscription, Length};
+use cosmic::iced::{window::Id, Limits, Subscription};
+use cosmic::iced::widget::text_editor::{Content, Action};
 use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::prelude::*;
 use cosmic::widget;
@@ -36,6 +36,10 @@ pub struct AppModel {
     current_view: ViewState,
     /// Text content to post
     post_text: String,
+    /// Text editor content for multiline post input
+    text_editor_content: Content,
+    /// Emoji picker visibility
+    show_emoji_picker: bool,
     /// Selected image paths
     image_paths: Vec<std::path::PathBuf>,
     /// Platform selection
@@ -87,6 +91,9 @@ pub enum Message {
     
     // UI Messages
     TextChanged(String),
+    TextEditorAction(Action),
+    ToggleEmojiPicker,
+    InsertEmoji(String),
     SelectImages,
     ImagesSelected(Vec<std::path::PathBuf>),
     TogglePlatform(PlatformType, bool),
@@ -174,6 +181,8 @@ impl cosmic::Application for AppModel {
             popup: None,
             current_view: ViewState::Main,
             post_text: String::new(),
+            text_editor_content: Content::new(),
+            show_emoji_picker: false,
             image_paths: Vec::new(),
             post_to_x: false,
             post_to_bluesky: false,
@@ -277,6 +286,21 @@ impl cosmic::Application for AppModel {
             }
             Message::TextChanged(text) => {
                 self.post_text = text;
+            }
+            Message::TextEditorAction(action) => {
+                self.text_editor_content.perform(action);
+                self.post_text = self.text_editor_content.text();
+            }
+            Message::ToggleEmojiPicker => {
+                self.show_emoji_picker = !self.show_emoji_picker;
+            }
+            Message::InsertEmoji(emoji) => {
+                // Append emoji to the end of the text
+                let current_text = self.text_editor_content.text();
+                let new_text = format!("{}{}", current_text, emoji);
+                self.text_editor_content = Content::with_text(&new_text);
+                self.post_text = new_text;
+                self.show_emoji_picker = false;
             }
             Message::SelectImages => {
                 return Task::future(
@@ -520,11 +544,19 @@ impl AppModel {
                     )
             )
             .push(
-                widget::text_input("What's happening?", &self.post_text)
-                    .on_input(Message::TextChanged)
+                widget::text_editor(&self.text_editor_content)
+                    .placeholder("What's happening?")
+                    .height(100)
+                    .on_action(Message::TextEditorAction)
             )
             .push(
-                widget::text::caption(format!("{} characters", char_count))
+                widget::row()
+                    .spacing(10)
+                    .push(
+                        widget::button::icon(widget::icon::from_name("face-smile-symbolic"))
+                            .on_press(Message::ToggleEmojiPicker)
+                    )
+                    .push(widget::text::caption(format!("{} characters", char_count)))
             )
             .push(
                 widget::button::text("Add Images")
@@ -609,7 +641,65 @@ impl AppModel {
             content_list = content_list.push(widget::text::caption(&self.status_message));
         }
         
+        // Add emoji picker modal if visible
+        if self.show_emoji_picker {
+            content_list = content_list.push(self.view_emoji_picker());
+        }
+        
         content_list
+    }
+    
+    fn view_emoji_picker(&self) -> Element<'_, Message> {
+        // Create a grid of emoji buttons
+        let emojis_list = emojis::Group::SmileysAndEmotion.emojis()
+            .chain(emojis::Group::PeopleAndBody.emojis())
+            .chain(emojis::Group::AnimalsAndNature.emojis())
+            .chain(emojis::Group::FoodAndDrink.emojis())
+            .chain(emojis::Group::TravelAndPlaces.emojis())
+            .chain(emojis::Group::Activities.emojis())
+            .chain(emojis::Group::Objects.emojis())
+            .chain(emojis::Group::Symbols.emojis())
+            .chain(emojis::Group::Flags.emojis())
+            .take(100); // Limit to first 100 emojis for performance
+        
+        let mut emoji_grid = widget::column().spacing(5).padding(10);
+        let mut current_row = widget::row().spacing(5);
+        let mut count = 0;
+        
+        for emoji in emojis_list {
+            current_row = current_row.push(
+                widget::button::text(emoji.as_str())
+                    .on_press(Message::InsertEmoji(emoji.as_str().to_string()))
+            );
+            count += 1;
+            if count % 8 == 0 {
+                emoji_grid = emoji_grid.push(current_row);
+                current_row = widget::row().spacing(5);
+            }
+        }
+        
+        // Add any remaining emojis
+        if count % 8 != 0 {
+            emoji_grid = emoji_grid.push(current_row);
+        }
+        
+        widget::container(
+            widget::column()
+                .spacing(10)
+                .push(
+                    widget::row()
+                        .spacing(10)
+                        .push(widget::text::body("Select Emoji"))
+                        .push(widget::horizontal_space())
+                        .push(
+                            widget::button::icon(widget::icon::from_name("window-close-symbolic"))
+                                .on_press(Message::ToggleEmojiPicker)
+                        )
+                )
+                .push(widget::scrollable(emoji_grid).height(200))
+        )
+        .padding(10)
+        .into()
     }
     
     fn view_settings(&self) -> widget::Column<'_, Message> {
