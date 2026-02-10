@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Doh!
+Comment=Multi-platform social media posting applet
+Icon=com.sgtapple.doh
+Exec=doh
+Categories=Network;InstantMessaging;
+Keywords=social;media;twitter;bluesky;nostr;mastodon;post;
+Terminal=false
+StartupNotify=true
