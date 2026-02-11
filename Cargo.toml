@@ -1,6 +1,6 @@
 [package]
 name = "doh"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 license = "MIT"
 description = "Multi-platform social media posting applet for COSMIC desktop"
@@ -31,6 +31,10 @@ keyring = "3"
 rfd = "0.14"
 emojis = "0.6"
 
+# Image processing
+image = { version = "0.25", features = ["jpeg", "png", "gif", "webp"] }
+kamadak-exif = "0.5"
+
 # Platform SDKs (will be added as we implement)
 # tweety-rs = "0.1"  # X/Twitter
 # bsky-sdk = "0.1"   # BlueSky
@@ -39,6 +43,7 @@ nostr-sdk = "0.36"
 oauth1 = "1.0.0"
 hmac = "0.12.1"
 sha1 = "0.10.6"
+sha2 = "0.10"
 
 [dependencies.i18n-embed]
 version = "0.16"

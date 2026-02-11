@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod credentials;
 mod i18n;
+mod image_utils;
 mod platforms;
 mod post_manager;
 

@@ -5,7 +5,7 @@
 use super::{Platform, Post, PostResult};
 use anyhow::{Result, anyhow};
 use nostr_sdk::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub enum NostrAuth {
     /// Direct private key
@@ -66,6 +66,8 @@ impl NostrPlatform {
     }
     
     async fn post_with_nsec(&self, post: &Post) -> Result<PostResult> {
+        use crate::image_utils;
+        
         // Get keys
         let keys = match self.get_keys().await {
             Ok(k) => {
@@ -100,9 +102,51 @@ impl NostrPlatform {
         // Give relays a moment to connect
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         
-        // Create and send text note
+        // Upload images if any
+        let mut image_urls = Vec::new();
+        if !post.images.is_empty() {
+            if let Some(blossom_url) = &self.image_host_url {
+                eprintln!("[Nostr] Uploading {} images to Blossom", post.images.len());
+                for (i, image_bytes) in post.images.iter().enumerate() {
+                    // Strip EXIF data for privacy (Blossom requirement)
+                    let processor = image_utils::ImageProcessor::new()
+                        .with_exif_stripping();
+                    
+                    let processed_bytes = match processor.process(image_bytes) {
+                        Ok(bytes) => {
+                            eprintln!("[Nostr] Image {} processed ({} -> {} bytes)", 
+                                i + 1, image_bytes.len(), bytes.len());
+                            bytes
+                        }
+                        Err(e) => {
+                            eprintln!("[Nostr] Failed to process image {}: {}", i + 1, e);
+                            continue;
+                        }
+                    };
+                    
+                    match self.upload_to_blossom(&processed_bytes, blossom_url, &client).await {
+                        Ok(url) => {
+                            eprintln!("[Nostr] Image {} uploaded: {}", i + 1, url);
+                            image_urls.push(url);
+                        }
+                        Err(e) => {
+                            eprintln!("[Nostr] Failed to upload image {}: {}", i + 1, e);
+                        }
+                    }
+                }
+            } else {
+                eprintln!("[Nostr] No Blossom server configured, skipping image upload");
+            }
+        }
+        
+        // Create text note with image URLs
+        let mut content = post.text.clone();
+        for url in &image_urls {
+            content.push_str(&format!("\n{}", url));
+        }
+        
         eprintln!("[Nostr] Creating event...");
-        let builder = EventBuilder::text_note(&post.text, vec![]);
+        let builder = EventBuilder::text_note(&content, vec![]);
         
         eprintln!("[Nostr] Sending event to relays...");
         match client.send_event_builder(builder).await {
@@ -119,7 +163,64 @@ impl NostrPlatform {
         }
     }
     
+    async fn upload_to_blossom(&self, image_bytes: &[u8], blossom_url: &str, _client: &Client) -> Result<String> {
+        use crate::image_utils;
+        use sha2::{Sha256, Digest};
+        use base64::Engine;
+        
+        // Calculate SHA-256 hash
+        let mut hasher = Sha256::new();
+        hasher.update(image_bytes);
+        let hash = format!("{:x}", hasher.finalize());
+        
+        let mime_type = image_utils::get_mime_type(image_bytes)?;
+        
+        // Create auth event for upload
+        let upload_url = format!("{}/upload", blossom_url.trim_end_matches('/'));
+        let timestamp = Timestamp::now();
+        
+        let auth_tags = vec![
+            Tag::custom(TagKind::Custom(std::borrow::Cow::Borrowed("t")), vec!["upload"]),
+            Tag::custom(TagKind::Custom(std::borrow::Cow::Borrowed("x")), vec![&hash]),
+            Tag::custom(TagKind::Custom(std::borrow::Cow::Borrowed("expiration")), 
+                vec![&(timestamp.as_u64() + 600).to_string()]), // 10 min expiration
+        ];
+        
+        // Create and sign auth event
+        let keys = self.get_keys().await?;
+        let auth_event = EventBuilder::new(Kind::Custom(24242), "", auth_tags)
+            .sign_with_keys(&keys)?;
+        
+        let engine = base64::engine::general_purpose::STANDARD;
+        let auth_header = engine.encode(auth_event.as_json());
+        
+        // Upload to Blossom
+        let http_client = reqwest::Client::new();
+        let response = http_client
+            .put(&upload_url)
+            .header("Authorization", format!("Nostr {}", auth_header))
+            .header("Content-Type", &mime_type)
+            .body(image_bytes.to_vec())
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Blossom upload failed: {}", error_text));
+        }
+        
+        #[derive(Deserialize)]
+        struct BlossomResponse {
+            url: String,
+        }
+        
+        let blossom_response: BlossomResponse = response.json().await?;
+        Ok(blossom_response.url)
+    }
+    
     async fn post_with_pleb_signer(&self, post: &Post) -> Result<PostResult> {
+        use crate::image_utils;
+        
         eprintln!("[Nostr] Posting via Pleb_Signer...");
         
         // Get pubkey from Pleb_Signer
@@ -133,6 +234,54 @@ impl NostrPlatform {
             }
         };
         
+        // Upload images if any
+        let mut image_urls = Vec::new();
+        if !post.images.is_empty() {
+            if let Some(blossom_url) = &self.image_host_url {
+                eprintln!("[Nostr] Uploading {} images to Blossom", post.images.len());
+                
+                // For PlebSigner, we need a temporary client for Blossom uploads
+                let temp_keys = Keys::generate();
+                let temp_client = Client::new(temp_keys);
+                
+                for (i, image_bytes) in post.images.iter().enumerate() {
+                    // Strip EXIF data for privacy (Blossom requirement)
+                    let processor = image_utils::ImageProcessor::new()
+                        .with_exif_stripping();
+                    
+                    let processed_bytes = match processor.process(image_bytes) {
+                        Ok(bytes) => {
+                            eprintln!("[Nostr] Image {} processed ({} -> {} bytes)", 
+                                i + 1, image_bytes.len(), bytes.len());
+                            bytes
+                        }
+                        Err(e) => {
+                            eprintln!("[Nostr] Failed to process image {}: {}", i + 1, e);
+                            continue;
+                        }
+                    };
+                    
+                    match self.upload_to_blossom(&processed_bytes, blossom_url, &temp_client).await {
+                        Ok(url) => {
+                            eprintln!("[Nostr] Image {} uploaded: {}", i + 1, url);
+                            image_urls.push(url);
+                        }
+                        Err(e) => {
+                            eprintln!("[Nostr] Failed to upload image {}: {}", i + 1, e);
+                        }
+                    }
+                }
+            } else {
+                eprintln!("[Nostr] No Blossom server configured, skipping image upload");
+            }
+        }
+        
+        // Create content with image URLs
+        let mut content = post.text.clone();
+        for url in &image_urls {
+            content.push_str(&format!("\n{}", url));
+        }
+        
         // Create unsigned event
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -141,7 +290,7 @@ impl NostrPlatform {
         
         let unsigned_event = serde_json::json!({
             "kind": 1,
-            "content": post.text,
+            "content": content,
             "tags": [],
             "created_at": timestamp
         });

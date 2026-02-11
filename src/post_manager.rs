@@ -8,7 +8,6 @@ use crate::platforms::nostr::{NostrPlatform, NostrAuth};
 use crate::platforms::bluesky::BlueSkyPlatform;
 use crate::platforms::twitter::TwitterPlatform;
 use crate::platforms::mastodon::MastodonPlatform;
-use anyhow::Result;
 
 pub struct PostManager {
     credentials: Credentials,
@@ -64,7 +63,7 @@ impl PostManager {
             self.credentials.nostr_relays.clone()
         };
         
-        let mut platform = NostrPlatform::new(
+        let platform = NostrPlatform::new(
             auth,
             relays,
             self.credentials.nostr_image_host_url.clone(),
@@ -91,7 +90,7 @@ impl PostManager {
             return ("BlueSky".to_string(), false, "Not configured".to_string());
         }
         
-        let mut platform = BlueSkyPlatform::new(
+        let platform = BlueSkyPlatform::new(
             self.credentials.bluesky_handle.clone().unwrap(),
             self.credentials.bluesky_app_password.clone().unwrap(),
         );
@@ -147,11 +146,7 @@ impl PostManager {
             self.credentials.mastodon_access_token.clone().unwrap(),
         );
         
-        // Convert image Vec<u8> to temp files for now (simplified)
-        // In production, you'd want better handling
-        let image_paths: Vec<String> = Vec::new(); // TODO: Handle images properly
-        
-        match platform.post(post.text.clone(), image_paths).await {
+        match platform.post(post.text.clone(), &post.images).await {
             Ok(url) => {
                 eprintln!("[Mastodon] Success: {}", url);
                 ("Mastodon".to_string(), true, url)

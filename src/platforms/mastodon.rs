@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: MIT
+
 use anyhow::{anyhow, Result};
 use reqwest::multipart;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct MastodonPlatform {
@@ -36,16 +37,16 @@ impl MastodonPlatform {
         }
     }
 
-    pub async fn post(&self, text: String, image_paths: Vec<String>) -> Result<String> {
+    pub async fn post(&self, text: String, images: &[Vec<u8>]) -> Result<String> {
         eprintln!("[Mastodon] Starting post");
         eprintln!("[Mastodon] Text length: {}", text.len());
-        eprintln!("[Mastodon] Image count: {}", image_paths.len());
+        eprintln!("[Mastodon] Image count: {}", images.len());
 
         // Upload images if any
         let mut media_ids = Vec::new();
-        for (i, path) in image_paths.iter().enumerate() {
-            eprintln!("[Mastodon] Uploading image {}: {}", i + 1, path);
-            match self.upload_media(path).await {
+        for (i, image_bytes) in images.iter().enumerate() {
+            eprintln!("[Mastodon] Uploading image {} ({} bytes)", i + 1, image_bytes.len());
+            match self.upload_media(image_bytes).await {
                 Ok(media_id) => {
                     eprintln!("[Mastodon] Image {} uploaded successfully: {}", i + 1, media_id);
                     media_ids.push(media_id);
@@ -97,25 +98,24 @@ impl MastodonPlatform {
         Ok(post_url)
     }
 
-    async fn upload_media(&self, path: &str) -> Result<String> {
-        eprintln!("[Mastodon] Reading file: {}", path);
+    async fn upload_media(&self, image_bytes: &[u8]) -> Result<String> {
+        use crate::image_utils;
         
-        let file_path = Path::new(path);
-        if !file_path.exists() {
-            return Err(anyhow!("File does not exist: {}", path));
-        }
+        eprintln!("[Mastodon] Processing image ({} bytes)", image_bytes.len());
+        
+        let mime_type = image_utils::get_mime_type(image_bytes)?;
+        let file_name = format!("image.{}", 
+            if mime_type.contains("png") { "png" } 
+            else if mime_type.contains("gif") { "gif" }
+            else if mime_type.contains("webp") { "webp" }
+            else { "jpg" }
+        );
 
-        let file_bytes = tokio::fs::read(file_path).await?;
-        let file_name = file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("image.jpg");
+        eprintln!("[Mastodon] MIME type: {}, filename: {}", mime_type, file_name);
 
-        eprintln!("[Mastodon] File size: {} bytes", file_bytes.len());
-
-        let part = multipart::Part::bytes(file_bytes)
-            .file_name(file_name.to_string())
-            .mime_str("image/jpeg")?;
+        let part = multipart::Part::bytes(image_bytes.to_vec())
+            .file_name(file_name)
+            .mime_str(&mime_type)?;
 
         let form = multipart::Form::new().part("file", part);
 

@@ -43,6 +43,43 @@ struct PostRecord {
     created_at: String,
     #[serde(rename = "$type")]
     record_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embed: Option<ImagesEmbed>,
+}
+
+#[derive(Serialize)]
+struct ImagesEmbed {
+    #[serde(rename = "$type")]
+    embed_type: String,
+    images: Vec<ImageRef>,
+}
+
+#[derive(Serialize)]
+struct ImageRef {
+    alt: String,
+    image: BlobRef,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BlobRef {
+    #[serde(rename = "$type")]
+    blob_type: String,
+    #[serde(rename = "ref")]
+    reference: BlobReference,
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    size: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BlobReference {
+    #[serde(rename = "$link")]
+    link: String,
+}
+
+#[derive(Deserialize)]
+struct UploadBlobResponse {
+    blob: BlobRef,
 }
 
 impl BlueSkyPlatform {
@@ -85,6 +122,8 @@ impl Platform for BlueSkyPlatform {
     }
     
     async fn post(&self, post: &Post) -> Result<PostResult> {
+        use crate::image_utils;
+        
         let mut platform = self.clone();
         
         // Login if not already authenticated
@@ -95,12 +134,60 @@ impl Platform for BlueSkyPlatform {
         let token = platform.access_token.as_ref()
             .ok_or_else(|| anyhow!("Not authenticated"))?;
         
+        // Upload images if any (max 4 images, 1MB each)
+        let mut image_refs = Vec::new();
+        for (i, image_bytes) in post.images.iter().enumerate().take(4) {
+            eprintln!("[BlueSky] Processing image {} ({} bytes)", i + 1, image_bytes.len());
+            
+            // Compress to 1MB max
+            let processor = image_utils::ImageProcessor::new()
+                .with_max_size(1_000_000) // 1MB
+                .with_max_dimension(2000); // Max resolution
+            
+            let processed_bytes = match processor.process(image_bytes) {
+                Ok(bytes) => {
+                    eprintln!("[BlueSky] Image {} processed to {} bytes", i + 1, bytes.len());
+                    bytes
+                }
+                Err(e) => {
+                    eprintln!("[BlueSky] Failed to process image {}: {}", i + 1, e);
+                    return Ok(PostResult::Error {
+                        message: format!("Failed to process image: {}", e),
+                    });
+                }
+            };
+            
+            match platform.upload_blob(&processed_bytes, token).await {
+                Ok(blob_ref) => {
+                    eprintln!("[BlueSky] Image {} uploaded successfully", i + 1);
+                    image_refs.push(ImageRef {
+                        alt: String::new(),
+                        image: blob_ref,
+                    });
+                }
+                Err(e) => {
+                    eprintln!("[BlueSky] Failed to upload image {}: {}", i + 1, e);
+                    return Ok(PostResult::Error {
+                        message: format!("Failed to upload image: {}", e),
+                    });
+                }
+            }
+        }
+        
         // Create post record
         let now = chrono::Utc::now().to_rfc3339();
         let record = PostRecord {
             text: post.text.clone(),
             created_at: now,
             record_type: "app.bsky.feed.post".to_string(),
+            embed: if image_refs.is_empty() {
+                None
+            } else {
+                Some(ImagesEmbed {
+                    embed_type: "app.bsky.embed.images".to_string(),
+                    images: image_refs,
+                })
+            },
         };
         
         let request = CreatePostRequest {
@@ -125,6 +212,31 @@ impl Platform for BlueSkyPlatform {
                 message: format!("Failed to post: {}", error_text) 
             })
         }
+    }
+}
+
+impl BlueSkyPlatform {
+    async fn upload_blob(&self, image_bytes: &[u8], token: &str) -> Result<BlobRef> {
+        use crate::image_utils;
+        
+        let mime_type = image_utils::get_mime_type(image_bytes)?;
+        
+        let client = reqwest::Client::new();
+        let response = client
+            .post("https://bsky.social/xrpc/com.atproto.repo.uploadBlob")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", &mime_type)
+            .body(image_bytes.to_vec())
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Failed to upload blob: {}", error_text));
+        }
+        
+        let upload_response: UploadBlobResponse = response.json().await?;
+        Ok(upload_response.blob)
     }
 }
 

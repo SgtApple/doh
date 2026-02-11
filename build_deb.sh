@@ -3,7 +3,7 @@
 
 set -e
 
-VERSION="0.1.2"
+VERSION="0.1.4"
 PACKAGE_NAME="doh"
 ARCH="amd64"
 

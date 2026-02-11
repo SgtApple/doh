@@ -372,10 +372,24 @@ impl cosmic::Application for AppModel {
                 if self.post_to_mastodon { platforms.push("Mastodon".to_string()); }
                 
                 let text = self.post_text.clone();
-                let images = Vec::new(); // TODO: Load images from paths
+                let image_paths = self.image_paths.clone();
                 let credentials = self.credentials.clone();
                 
                 return Task::future(async move {
+                    // Load images from paths
+                    let mut images = Vec::new();
+                    for path in image_paths {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                eprintln!("[App] Loaded image: {} ({} bytes)", path.display(), bytes.len());
+                                images.push(bytes);
+                            }
+                            Err(e) => {
+                                eprintln!("[App] Failed to load image {}: {}", path.display(), e);
+                            }
+                        }
+                    }
+                    
                     let manager = PostManager::new(credentials);
                     let results = manager.post(text, images, platforms).await;
                     cosmic::Action::App(Message::PostCompleted(results))
