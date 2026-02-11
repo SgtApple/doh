@@ -56,9 +56,9 @@ impl PostManager {
         
         let relays = if self.credentials.nostr_relays.is_empty() {
             vec![
+                "wss://relay.primal.net".to_string(),
                 "wss://relay.damus.io".to_string(),
-                "wss://relay.nostr.band".to_string(),
-                "wss://nos.lol".to_string(),
+                "wss://relay.pleb.one".to_string(),
             ]
         } else {
             self.credentials.nostr_relays.clone()

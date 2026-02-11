@@ -64,6 +64,7 @@ pub struct AppModel {
     nostr_nsec: String,
     nostr_relays: String,
     nostr_use_pleb_signer: bool,
+    nostr_blossom_server: String,
     // Mastodon
     mastodon_instance_url: String,
     mastodon_access_token: String,
@@ -115,6 +116,7 @@ pub enum Message {
     NostrNsecChanged(String),
     NostrRelaysChanged(String),
     NostrTogglePlebSigner(bool),
+    NostrBlossomServerChanged(String),
     MastodonInstanceUrlChanged(String),
     MastodonAccessTokenChanged(String),
     
@@ -165,18 +167,21 @@ impl cosmic::Application for AppModel {
         let nostr_nsec = credentials.nostr_nsec.clone().unwrap_or_default();
         let nostr_relays = credentials.nostr_relays.join(", ");
         let nostr_use_pleb_signer = credentials.nostr_use_pleb_signer;
+        let nostr_blossom_server = credentials.nostr_image_host_url.clone().unwrap_or_default();
         let mastodon_instance_url = credentials.mastodon_instance_url.clone().unwrap_or_default();
         let mastodon_access_token = credentials.mastodon_access_token.clone().unwrap_or_default();
+        
+        // Load config
+        let config = cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
+            .map(|context| match Config::get_entry(&context) {
+                Ok(config) => config,
+                Err((_errors, config)) => config,
+            })
+            .unwrap_or_default();
         
         // Construct the app model with the runtime's core.
         let app = AppModel {
             core,
-            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((_errors, config)) => config,
-                })
-                .unwrap_or_default(),
             credentials,
             popup: None,
             current_view: ViewState::Main,
@@ -184,12 +189,13 @@ impl cosmic::Application for AppModel {
             text_editor_content: Content::new(),
             show_emoji_picker: false,
             image_paths: Vec::new(),
-            post_to_x: false,
-            post_to_bluesky: false,
-            post_to_nostr: false,
-            post_to_mastodon: false,
+            post_to_x: config.post_to_x,
+            post_to_bluesky: config.post_to_bluesky,
+            post_to_nostr: config.post_to_nostr,
+            post_to_mastodon: config.post_to_mastodon,
             posting: false,
             status_message: String::new(),
+            config,
             twitter_consumer_key,
             twitter_consumer_secret,
             twitter_access_token,
@@ -199,6 +205,7 @@ impl cosmic::Application for AppModel {
             nostr_nsec,
             nostr_relays,
             nostr_use_pleb_signer,
+            nostr_blossom_server,
             mastodon_instance_url,
             mastodon_access_token,
             twitter_section_expanded: false,
@@ -326,6 +333,17 @@ impl cosmic::Application for AppModel {
                     PlatformType::Nostr => self.post_to_nostr = enabled,
                     PlatformType::Mastodon => self.post_to_mastodon = enabled,
                 }
+                
+                // Update config to persist platform selections
+                self.config.post_to_x = self.post_to_x;
+                self.config.post_to_bluesky = self.post_to_bluesky;
+                self.config.post_to_nostr = self.post_to_nostr;
+                self.config.post_to_mastodon = self.post_to_mastodon;
+                
+                // Save config
+                if let Ok(config_helper) = cosmic_config::Config::new(Self::APP_ID, Config::VERSION) {
+                    let _ = self.config.write_entry(&config_helper);
+                }
             }
             Message::PostClicked => {
                 if self.post_text.is_empty() {
@@ -373,6 +391,13 @@ impl cosmic::Application for AppModel {
                     total,
                     if success_count < total { "Check logs for errors." } else { "" }
                 );
+                
+                // Clear input box if all posts were successful
+                if success_count == total && total > 0 {
+                    self.post_text.clear();
+                    self.text_editor_content = Content::new();
+                    self.image_paths.clear();
+                }
             }
             Message::ShowSettings => {
                 self.current_view = ViewState::Settings;
@@ -424,6 +449,11 @@ impl cosmic::Application for AppModel {
                     self.nostr_relays.split(',').map(|s| s.trim().to_string()).collect()
                 };
                 self.credentials.nostr_use_pleb_signer = self.nostr_use_pleb_signer;
+                self.credentials.nostr_image_host_url = if self.nostr_blossom_server.is_empty() {
+                    None
+                } else {
+                    Some(self.nostr_blossom_server.clone())
+                };
                 self.credentials.mastodon_instance_url = if self.mastodon_instance_url.is_empty() {
                     None
                 } else {
@@ -472,6 +502,9 @@ impl cosmic::Application for AppModel {
             }
             Message::NostrTogglePlebSigner(value) => {
                 self.nostr_use_pleb_signer = value;
+            }
+            Message::NostrBlossomServerChanged(value) => {
+                self.nostr_blossom_server = value;
             }
             Message::ToggleTwitterSection => {
                 self.twitter_section_expanded = !self.twitter_section_expanded;
@@ -813,7 +846,12 @@ impl AppModel {
                     widget::text_input("Relays (comma-separated)", &self.nostr_relays)
                         .on_input(Message::NostrRelaysChanged)
                 )
-                .push(widget::text::caption("Leave empty for defaults: relay.damus.io, relay.nostr.band, nos.lol"));
+                .push(widget::text::caption("Leave empty for defaults: relay.primal.net, relay.damus.io, relay.pleb.one"))
+                .push(
+                    widget::text_input("Blossom Server URL", &self.nostr_blossom_server)
+                        .on_input(Message::NostrBlossomServerChanged)
+                )
+                .push(widget::text::caption("URL for uploading images (e.g., https://blossom.primal.net)"));
         }
         content = content.push(widget::divider::horizontal::default());
         
